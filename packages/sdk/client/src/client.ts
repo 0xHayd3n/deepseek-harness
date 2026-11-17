@@ -19,6 +19,11 @@ import {
   type CommandExecution,
   type InitializeParams,
   type InitializeResult,
+  type PauseRuntimeId,
+  type PauseRequestId,
+  type SessionPauseParams,
+  type SessionPauseStateParams,
+  type SessionPauseResult,
   type SessionPromptParams,
   type SessionQueryParams,
   type SessionQueryResult,
@@ -342,7 +347,21 @@ export class HarnessClient {
       || typeof result.serverInfo.name !== 'string' || typeof result.serverInfo.version !== 'string') {
       throw new SdkProtocolError(`initialize returned no server identity: ${JSON.stringify(result)}`)
     }
-    return { serverInfo: { name: result.serverInfo.name, version: result.serverInfo.version } }
+    let capabilities: InitializeResult['capabilities']
+    if (result.capabilities !== undefined) {
+      if (!isRecord(result.capabilities)) throw new SdkProtocolError('initialize returned invalid capability metadata')
+      const pause = result.capabilities.cooperativePause
+      if (pause !== undefined) {
+        if (!isRecord(pause) || typeof pause.runtimeId !== 'string' || pause.runtimeId.length === 0 || pause.scope !== 'turn-admission') {
+          throw new SdkProtocolError('initialize returned invalid cooperative pause capability')
+        }
+        capabilities = { cooperativePause: { runtimeId: pause.runtimeId as PauseRuntimeId, scope: 'turn-admission' } }
+      }
+    }
+    return {
+      serverInfo: { name: result.serverInfo.name, version: result.serverInfo.version },
+      ...capabilities === undefined ? {} : { capabilities },
+    }
   }
 
   /**
@@ -367,6 +386,64 @@ export class HarnessClient {
    */
   async resumeSession(sessionId: string): Promise<void> {
     await this.request('session/resume', { sessionId })
+  }
+
+  /**
+   * Hold later turns in the original runtime without aborting the entered turn.
+   * @param params - exact negotiated runtime, owned Session, and current or next generation.
+   * @returns an admission receipt; `pending` does not acknowledge a completed pause.
+   */
+  requestPause(params: SessionPauseParams): Promise<SessionPauseResult> {
+    return this.sessionPauseRequest('session/pause', params, params.generation, params.requestId)
+  }
+
+  /**
+   * Reconcile the latest receipt without starting a runtime or opening a Session.
+   * @param params - exact original runtime and already-owned Session.
+   * @returns the latest process-local admission state, not native-work coverage.
+   */
+  getPauseState(params: SessionPauseStateParams): Promise<SessionPauseResult> {
+    return this.sessionPauseRequest('session/pause-state', params)
+  }
+
+  /**
+   * Release only the matching latest generation, on the original transport.
+   * @param params - exact runtime, owned Session, and generation being released.
+   * @returns the current receipt; does not cancel, close, or transfer execution.
+   */
+  releasePause(params: SessionPauseParams): Promise<SessionPauseResult> {
+    return this.sessionPauseRequest('session/release-pause', params, params.generation, params.requestId)
+  }
+
+  /** Send pause control only through this client's original, still-open transport. */
+  private async sessionPauseRequest(
+    method: 'session/pause' | 'session/pause-state' | 'session/release-pause',
+    params: SessionPauseStateParams,
+    generation?: number,
+    requestId?: PauseRequestId,
+  ): Promise<SessionPauseResult> {
+    if (this.transport === undefined || this.closeTask !== undefined) {
+      throw new TransportClosedError('cooperative pause requires the original running SDK client')
+    }
+    const target = { sessionId: params.sessionId, runtimeId: params.runtimeId }
+    const payload = generation === undefined ? target : { ...target, generation, requestId }
+    const result = await this.request(method, payload)
+    if (!isRecord(result) || result.sessionId !== target.sessionId || result.runtimeId !== target.runtimeId
+      || result.scope !== 'turn-admission' || typeof result.generation !== 'number'
+      || !Number.isSafeInteger(result.generation) || result.generation < 0
+      || (generation !== undefined && (result.generation !== generation || result.requestId !== requestId))
+      || (result.generation === 0 ? result.requestId !== undefined : typeof result.requestId !== 'string' || result.requestId.length === 0)) {
+      throw new SdkProtocolError(`${method} returned an invalid or mismatched admission receipt`)
+    }
+    const state = result.state
+    if ((state !== 'unrequested' && state !== 'pending' && state !== 'paused' && state !== 'released' && state !== 'invalidated')
+      || (result.generation === 0 ? state !== 'unrequested' : state === 'unrequested')) {
+      throw new SdkProtocolError(`${method} returned an invalid admission state`)
+    }
+    return {
+      ...target, scope: 'turn-admission', generation: result.generation, state,
+      ...result.requestId === undefined ? {} : { requestId: result.requestId as PauseRequestId },
+    }
   }
 
   /**

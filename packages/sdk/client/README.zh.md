@@ -57,6 +57,12 @@ try {
 
 `HarnessSession.getWorkingDirectory()` 读取有效目录；`setWorkingDirectory(path)` 修改目录并返回校验后的绝对路径。两个方法都可创建未知 Session，而不启动模型轮次。相对路径以 Session 当前目录解析。起始目录元数据、权限与已有进程保持不变。`HarnessClient` 提供同名方法，并以 `sessionId` 作为首个参数。
 
+### 在现有客户端上暂停后续轮次
+
+以 `capabilities.cooperativePause: true` 初始化低层 `HarnessClient`，然后保留返回的 `capabilities.cooperativePause.runtimeId`。`requestPause({ sessionId, runtimeId, generation, requestId })` 为已拥有的 Agent 请求暂停。发送前创建并保留 `PauseRequestId`；可用 `dsh-brand` 的 `brandString<PauseRequestId>(randomUUID())` 和 Node `crypto` 创建它。`getPauseState({ sessionId, runtimeId })` 读取最新回执；`releasePause()` 要求相同的代次和请求 id。[协议参考](../protocol/README.zh.md#cooperative-turn-admission-pause)定义代次、状态及响应丢失后的核对方式。
+
+这些控制仅使用现有传输，从不启动替代运行时。暂停待决或生效期间，原始客户端、进程、回调处理器和传输都要保持存活。`close()`、`shutdown` 及离开 `await using` 作用域仍会停止运行时；它们不是暂停操作。待决回执不代表静止或原生操作失败；无效回执也不授权取消或重试。
+
 ### 用 DeepSeekHarness 运行 agent 轮次
 
 ```ts

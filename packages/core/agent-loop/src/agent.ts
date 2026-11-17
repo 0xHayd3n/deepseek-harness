@@ -9,6 +9,8 @@ import type {
   AgentCancelCause,
   AgentEventDispatch,
   AgentOptions,
+  AgentPauseHandle,
+  AgentPauseState,
   AgentStatus,
   CancelOptions,
   ModelSelection,
@@ -48,6 +50,15 @@ interface LoopProjections {
   readonly modelSelection: () => ModelSelectionProjectionState
   /** Current queued and claimed input. */
   readonly inbox: () => InboxState
+}
+
+/** One caller owns the readiness, release, and deferred wake of admission. */
+interface TurnAdmissionHold {
+  readonly handle: AgentPauseHandle
+  readonly released: Promise<void>
+  wakeRequested: boolean
+  markReady(): void
+  invalidate(): void
 }
 
 type Phase =
@@ -114,6 +125,7 @@ export class ReactLoopAgent implements Agent {
   readonly inbox: ReactLoopInbox
   private phase: Phase
   private activityDone: Promise<void> = Promise.resolve()
+  private pauseRequest: TurnAdmissionHold | undefined
 
   /** The agent-scoped registration boundary; the lifecycle owner unwinds it after the driver exits. */
   readonly scope: Scope
@@ -188,16 +200,56 @@ export class ReactLoopAgent implements Agent {
     this.send(input, 'next-step', false)
   }
 
+  requestPause(): AgentPauseHandle {
+    if (this.pauseRequest !== undefined) throw new Error(`agent "${this.id}" already has a pause holder`)
+    let state: AgentPauseState = 'pending'
+    const ready = Promise.withResolvers<Exclude<AgentPauseState, 'pending'>>()
+    const released = Promise.withResolvers<void>()
+    const request: TurnAdmissionHold = {
+      wakeRequested: false,
+      released: released.promise,
+      markReady: (): void => {
+        if (state !== 'pending') return
+        state = 'paused'
+        ready.resolve(state)
+      },
+      invalidate: (): void => {
+        if (state !== 'pending' && state !== 'paused') return
+        state = 'invalidated'
+        ready.resolve(state)
+        released.resolve()
+        this.pauseRequest = undefined
+      },
+      handle: {
+        get state(): AgentPauseState { return state },
+        ready: ready.promise,
+        release: (): void => {
+          if (state !== 'pending' && state !== 'paused') return
+          state = 'released'
+          ready.resolve(state)
+          released.resolve()
+          this.pauseRequest = undefined
+          if (request.wakeRequested && this.inbox.hasPending) this.wakeDriver()
+        },
+      },
+    }
+    this.pauseRequest = request
+    if (this.phase.kind === 'idle') request.markReady()
+    return request.handle
+  }
+
   cancel(cause: AgentCancelCause, options: CancelOptions = {}): void {
     if (!options.keepInbox) {
       this.inbox.clear()
       if (this.phase.kind !== 'idle') this.phase.wakeRequested = false
     }
     if (this.phase.kind !== 'idle') this.phase.abort.abort(cause)
+    this.pauseRequest?.invalidate()
   }
 
   runMaintenance<T>(job: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.phase.kind !== 'idle') throw new Error(`agent "${this.id}" already has active work`)
+    if (this.pauseRequest !== undefined) throw new Error(`agent "${this.id}" already has a pause holder`)
     const done = Promise.withResolvers<void>()
     const maintenance: Phase = {
       kind: 'maintenance',
@@ -212,6 +264,7 @@ export class ReactLoopAgent implements Agent {
         return await job(maintenance.abort.signal)
       } finally {
         this.setPhase({ kind: 'idle', lastTurn: maintenance.lastTurn })
+        this.pauseRequest?.markReady()
         const cause = abortedCancelCause(maintenance.abort.signal)
         if (cause?.kind !== 'disposed' && maintenance.wakeRequested && this.inbox.hasPending) this.wakeDriver()
         done.resolve()
@@ -228,6 +281,10 @@ export class ReactLoopAgent implements Agent {
    *   the inbox insertion so a reentrant cancel cannot reclassify it.
    */
   private wakeDriver(wakeAfterAbort = false): void {
+    if (this.pauseRequest !== undefined) {
+      this.pauseRequest.wakeRequested = true
+      if (this.phase.kind === 'idle') return
+    }
     if (this.phase.kind !== 'idle') {
       // Maintenance and aborted drivers cannot deliver the wake: latch it for
       // replay at convergence. Live drivers claim queued work themselves;
@@ -267,7 +324,13 @@ export class ReactLoopAgent implements Agent {
 
   private async kick(): Promise<void> {
     try {
-      while (await this.turn()) {}
+      while (await this.turn()) {
+        while (this.pauseRequest !== undefined) {
+          const request = this.pauseRequest
+          request.markReady()
+          await request.released
+        }
+      }
     } catch (_error) {
       // Reported failures and cancellation are contained at the driver boundary.
     } finally {
@@ -275,6 +338,7 @@ export class ReactLoopAgent implements Agent {
       if (this.phase.kind === 'running') {
         const { turn, wakeRequested } = this.phase
         this.setPhase({ kind: 'idle', lastTurn: turn })
+        this.pauseRequest?.markReady()
         if (wakeRequested && this.inbox.hasPending) this.wakeDriver()
       }
     }

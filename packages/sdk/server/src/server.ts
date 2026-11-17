@@ -7,9 +7,11 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { AsyncLocalStorage } from 'node:async_hooks'
+import { randomUUID } from 'node:crypto'
 import { resolve } from 'node:path'
 import { QueryActivity } from './query-activity.ts'
 import { SdkUserQuestionBridge } from './user-questions.ts'
+import { SdkSessionPause } from './session-pause.ts'
 import { queryCommand } from './query-input.ts'
 import { queryCommandImages, queryContent } from './query-content.ts'
 import { brandString } from '@deepseek-ai/dsh-brand'
@@ -36,6 +38,11 @@ import type {
   SessionQueryResult,
   SessionPromptParams,
   SessionPromptResult,
+  SessionPauseParams,
+  SessionPauseStateParams,
+  SessionPauseResult,
+  PauseRuntimeId,
+  PauseRequestId,
   SessionResumeParams,
   SessionWaitParams,
   SessionWorkingDirectoryParams,
@@ -48,6 +55,7 @@ import type {
 
 interface SessionRecord {
   handle: AgentHandle
+  pause: SdkSessionPause
   /** Latest live failure not superseded by a subsequently committed terminal. */
   failure: { readonly error: unknown; readonly atOffset: SessionLogOffset } | undefined
 }
@@ -94,6 +102,7 @@ function successStatus(reason: string, options: HarnessSdkJsonRpcServerOptions):
  * reinitialization is unsupported.
  */
 export class HarnessSdkJsonRpcServer {
+  private readonly runtimeId = randomUUID() as PauseRuntimeId
   private cwd = process.cwd()
   private provider = 'deepseek-official'
   private model = 'deepseek-official'
@@ -221,6 +230,9 @@ export class HarnessSdkJsonRpcServer {
    * @returns server identity for the handshake.
    */
   async initialize(params: InitializeParams): Promise<InitializeResult> {
+    if (params.capabilities?.cooperativePause !== undefined && typeof params.capabilities.cooperativePause !== 'boolean') {
+      throw new TypeError('initialize cooperativePause capability must be a boolean')
+    }
     if (params.approvalRequests !== undefined && typeof params.approvalRequests !== 'boolean') {
       throw new TypeError('initialize approvalRequests must be a boolean')
     }
@@ -259,7 +271,12 @@ export class HarnessSdkJsonRpcServer {
     this.userQuestions.enabled = params.capabilities?.userQuestions === true
     this.initialized = true
     this.initialization.resolve()
-    return { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } }
+    return {
+      serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' },
+      ...params.capabilities?.cooperativePause === true
+        ? { capabilities: { cooperativePause: { runtimeId: this.runtimeId, scope: 'turn-admission' as const } } }
+        : {},
+    }
   }
 
   /**
@@ -388,6 +405,47 @@ export class HarnessSdkJsonRpcServer {
         return {}
       }
     }
+  }
+
+  /**
+   * Request admission hold without waiting for or aborting an entered turn.
+   * @param params - exact runtime, owned Session, and current or next generation.
+   * @returns a process-local receipt; only `paused` acknowledges the turn boundary.
+   */
+  requestPause(params: SessionPauseParams): SessionPauseResult {
+    return this.ownedSessionPause(params).request(params.generation, params.requestId)
+  }
+
+  /**
+   * Reconcile the latest pause without opening or restoring a Session.
+   * @param params - exact runtime and an already-owned live Session.
+   * @returns the latest admission receipt, not a native-work inventory.
+   */
+  getPauseState(params: SessionPauseStateParams): SessionPauseResult {
+    return this.ownedSessionPause(params).state()
+  }
+
+  /**
+   * Release only the matching generation; never cancel native execution.
+   * @param params - exact runtime, owned Session, and generation to release.
+   * @returns the current receipt; terminal receipts cannot reacquire admission.
+   */
+  releasePause(params: SessionPauseParams): SessionPauseResult {
+    return this.ownedSessionPause(params).release(params.generation, params.requestId)
+  }
+
+  /** Resolve live SDK ownership before any pause read or mutation. */
+  private ownedSessionPause(params: SessionPauseStateParams): SdkSessionPause {
+    if (!this.initialized) throw new Error('SDK server is not initialized')
+    if (this.shuttingDown) throw new Error('SDK server is shutting down')
+    if (typeof params.sessionId !== 'string' || params.sessionId.length === 0) {
+      throw new TypeError('cooperative pause requires a non-empty sessionId string')
+    }
+    if (params.runtimeId !== this.runtimeId) throw new Error('cooperative pause runtime instance does not match')
+    const record = this.sessions.get(params.sessionId)
+    if (record === undefined) throw new Error(`unknown SDK session: ${params.sessionId}`)
+    this.assertLiveAgent(record, params.sessionId)
+    return record.pause
   }
 
   private ownsAgent(agent: Agent): boolean {
@@ -522,6 +580,19 @@ export class HarnessSdkJsonRpcServer {
         if (typeof sessionId !== 'string') throw new TypeError('session/wait requires a sessionId string')
         return this.wait({ sessionId })
       }
+      case 'session/pause':
+      case 'session/pause-state':
+      case 'session/release-pause': {
+        if (typeof params?.sessionId !== 'string' || typeof params.runtimeId !== 'string') {
+          throw new TypeError('cooperative pause requires sessionId and runtimeId strings')
+        }
+        const target = { sessionId: params.sessionId, runtimeId: params.runtimeId as PauseRuntimeId }
+        if (method === 'session/pause-state') return this.getPauseState(target)
+        if (typeof params.generation !== 'number') throw new TypeError('cooperative pause requires a generation number')
+        if (typeof params.requestId !== 'string' || params.requestId.length === 0) throw new TypeError('cooperative pause requires a non-empty requestId string')
+        const request = { ...target, generation: params.generation, requestId: params.requestId as PauseRequestId }
+        return method === 'session/pause' ? this.requestPause(request) : this.releasePause(request)
+      }
       case 'session/working-directory/get':
       case 'session/working-directory/set': {
         if (typeof params?.sessionId !== 'string' || params.sessionId.length === 0) {
@@ -590,7 +661,7 @@ export class HarnessSdkJsonRpcServer {
       meta: { cwd: this.cwd },
       agentOptions,
     }))
-    const rec: SessionRecord = { handle, failure: undefined }
+    const rec: SessionRecord = { handle, pause: new SdkSessionPause(handle.agent, this.runtimeId), failure: undefined }
     this.sessions.set(sessionId, rec)
     return rec
   }

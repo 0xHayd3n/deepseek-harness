@@ -110,6 +110,8 @@ interface SdkAssertions {
   patches?: readonly string[]
   /** Captured model-request JSONL filename under this scenario's private DSH home. */
   modelRequestsFile?: string
+  /** Actual hold transitions from the recorded turn, under the private DSH home. */
+  pauseObservationFile?: string
   /** Replay caller-owned commands between turns; profile fixtures own any in-turn commands. */
   replayStandaloneCommands?: boolean
   /** Submit all manifest images with each standalone command, including rejected invocations. */
@@ -148,6 +150,8 @@ const SDK_ASSERTIONS: Readonly<Record<string, SdkAssertions>> = {
 
   'desktop-context': {
     expectedFinalResponse: 'SDK snapshot OK',
+    patches: [fileURLToPath(new URL('./desktop-context/pause.cordis.yml', import.meta.url))],
+    pauseObservationFile: 'pause-lifecycle.json',
     runtimeContext: {
       includes: ['Current working directory:'],
       excludes: ['Current DeepSeek Harness implementation checkout:', 'Current DeepSeek Harness Web GUI URL:'],
@@ -443,7 +447,7 @@ async function hydrateReplayFixtures(scenario: CorpusScenario, cwd: string): Pro
   await mkdir(root, { recursive: true })
   return Promise.all((await fixtureFiles(scenario)).map(async (source) => {
     const destination = join(root, basename(source))
-    await writeFile(destination, (await readFile(source, 'utf8')).replaceAll('{{cwd}}', cwd))
+    await writeFile(destination, (await readFile(source, 'utf8')).replaceAll('{{cwd}}', JSON.stringify(cwd).slice(1, -1)))
     return destination
   }))
 }
@@ -872,6 +876,7 @@ async function runScenario(scenario: CorpusScenario): Promise<{
       })
     }
     await harness.start()
+
     let subscription = harness.client.subscribeSessionTree(sessionId)
     const titleSubscription = assertions.waitForProviderTitle === true
       ? harness.client.subscribeSessionTree(sessionId)
@@ -1030,6 +1035,11 @@ async function runScenario(scenario: CorpusScenario): Promise<{
     const modelRequests = assertions.modelRequestsFile !== undefined
       ? records(await readFile(join(dshHome, assertions.modelRequestsFile), 'utf8'))
       : []
+    if (assertions.pauseObservationFile !== undefined) {
+      expect(JSON.parse(await readFile(join(dshHome, assertions.pauseObservationFile), 'utf8'))).toEqual({
+        requested: 'pending', ready: 'paused', beforeRelease: 'paused', afterRelease: 'released', aborted: false,
+      })
+    }
     if (planReviews !== undefined) expect(planReviews).toEqual([])
     return { results, notifications, observedMethods, logs, initialWorkspace, finalWorkspace, cwd, modelRequests }
   } finally {

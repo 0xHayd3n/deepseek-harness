@@ -1787,6 +1787,11 @@ def smoke_sdk_snapshot_mode(
             {"insert": [{
                 "id": "serial-created-fixture",
                 "name": str(Path(__file__).resolve().parents[1] / "packages/core/agent-loop/tests/fixtures/serial-created.mjs"),
+            }, {
+                "id": "pause-lifecycle-observation",
+                "name": (Path(__file__).resolve().parents[1]
+                         / "snapshots/sdk/desktop-context/pause-lifecycle.mjs").as_uri(),
+                "config": {"path": str(dsh_home / "pause-lifecycle.json")},
             }]},
         ])
         with DeepSeekHarness(
@@ -1815,6 +1820,10 @@ def smoke_sdk_snapshot_mode(
                 SNAPSHOT_PROMPT, session_id=SNAPSHOT_SESSION_ID, on_notification=observe_child,
             )
 
+        assert json.loads((dsh_home / "pause-lifecycle.json").read_text()) == {
+            "requested": "pending", "ready": "paused", "beforeRelease": "paused",
+            "afterRelease": "released", "aborted": False,
+        }
         assert result.final_response == SNAPSHOT_FINAL_TEXT, (result.final_response, harness.client._runtime_diagnostics())
         jobs = [event for event in result.events if event.get("type") in ("job/registered", "job/settled")]
         assert [event["type"] for event in jobs] == ["job/registered", "job/settled"], jobs

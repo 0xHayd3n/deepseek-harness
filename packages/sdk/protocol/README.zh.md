@@ -44,6 +44,9 @@ kind: "package-library"
 | client→server | `session/query` | `SessionQueryParams` → `SessionQueryResult` |
 | client→server | `session/resume` | `SessionResumeParams` → `{}` |
 | client→server | `session/wait` | `SessionWaitParams` → `{}` |
+| client→server | `session/pause` | `SessionPauseParams` → `SessionPauseResult` |
+| client→server | `session/pause-state` | `SessionPauseStateParams` → `SessionPauseResult` |
+| client→server | `session/release-pause` | `SessionPauseParams` → `SessionPauseResult` |
 | 客户端→服务端 | `session/working-directory/get` | `SessionWorkingDirectoryParams` → `SessionWorkingDirectoryResult` |
 | 客户端→服务端 | `session/working-directory/set` | `SessionWorkingDirectorySetParams` → `SessionWorkingDirectoryResult` |
 | client→server | `shutdown` | 无参数 → `{}` |
@@ -67,6 +70,17 @@ kind: "package-library"
 命令生命周期通知先于 `session/query` 的 handler 响应到达。命令查询以同一 `commandId` 的 `session.query.completed` 通知结束高层观察，等待命令启动的模型活动；目标创建和恢复还等待目标终止及收尾活动。状态命令无需模型 turn，其完成通知可以先于响应到达。SDK 内部消费该回执并返回 `RunResult`，转发器必须保持顺序。关闭会取消尚未结束的观察。
 
 `session/resume` 接受非空的持久化 `{ sessionId }`，恢复该会话后返回 `{}`。它要求先完成初始化并使用原持久化存储，不发送新输入；会话缺失、不可读、不兼容或被占用时，请求失败且不创建替代会话。历史事件保留在存储日志中，通知只报告新提交的事件。
+
+<a id="cooperative-turn-admission-pause"></a>
+### 协作式轮次准入暂停
+
+设置 `initialize.capabilities.cooperativePause: true`。支持此能力的运行时在 `InitializeResult.capabilities` 中返回 `{ cooperativePause: { runtimeId, scope: "turn-admission" } }`。运行时 id 标识此服务器实例；它不是凭据、可转移的所有权或重启令牌。控制要求先完成初始化，并针对已拥有的确切存活 Agent；它们不打开或恢复会话。
+
+`session/pause` 和 `session/release-pause` 接受 `{ sessionId, runtimeId, generation, requestId }`。发送前创建并保留 `requestId`。代次是从一开始的正安全整数；前一个暂停成为终态后，新暂停恰好使用下一个代次。重复相同的代次和请求 id 会返回当前回执，不会重新获取，包括释放或失效后。同代次的不同请求 id、过期或跳过的代次及竞争中的活动暂停均被拒绝。释放要求两个标识都匹配最新暂停；它不能释放另一调用方的暂停或后继暂停。
+
+`session/pause-state` 接受 `{ sessionId, runtimeId }`，读取最新回执而不唤醒工作。每个回执包含目标、`scope: "turn-admission"`、`generation` 和 `state`；正代次还包含 `requestId`。代次零且状态为 `unrequested` 仅表示此 SDK 所有者尚未请求暂停，不表示 Agent 未暂停或全局静止。已进入的轮次或维护任务产生 `pending`；`paused` 表示暂停已到达轮次准入点。`released` 和 `invalidated` 是终态。取消或 dispose 会使暂停失效。暂停就绪不等于整个 agent 空闲、后代已结束或原生工作清单。
+
+响应丢失后，在原始传输上查询状态，比较运行时、会话、代次和请求 id 后再采取操作。不要通过创建新意图或重发结果不确定的原生工作来消除未知的暂停结果。原始运行时、传输、回调和 Agent 都要保持存活。已进入的轮次可能无限等待；此 API 既不中止它，也不转移其所有者。它不提供持久检查点、重连、分离、跨进程移交或安全重启保证。
 
 <a id="native-user-questions"></a>
 ### 原生用户问答

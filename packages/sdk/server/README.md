@@ -55,6 +55,10 @@ Creation and edit accept images as reference material before the next round; sho
 
 `session/working-directory/get` accepts `{ sessionId }`; `session/working-directory/set` accepts `{ sessionId, path }`. Both return `{ cwd }` and create an unknown Session without starting a model turn. Reads recover missing directories through the working-directory service; changes preserve origin metadata and permissions, and reach the model through logged user context.
 
+### Cooperative turn-admission pause
+
+The opt-in [pause protocol](../protocol/README.md#cooperative-turn-admission-pause) controls only an exact, already-owned live Agent. The server rejects a different runtime identity, unknown or replaced Agent, unsupported driver, and mismatched holder instead of discovering, restoring, or creating a session. Each SDK Session retains only its latest receipt. This is not an inventory of holds owned by other plugins or of descendant work. Shutdown still disposes the runtime; pause does not change EOF, cancellation, or disposal behavior.
+
 ### Wiring
 
 The plugin creates one agent per `sessionId` on first use. A registered model adapter wins the route; an unowned `deepseek-official` route mounts the DeepSeek adapter, and any other unowned provider fails initialization. The selected adapter resolves the exact model and optional reasoning effort before initialization succeeds.

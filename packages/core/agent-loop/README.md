@@ -56,6 +56,10 @@ The generated [configuration catalog](../../../docs/config-catalog.md#deepseek-a
 
 A configured resume records the declared route as the Session selection before publication. Programmatic resume preserves the Session choice unless its setup explicitly records another route; initial `agentOptions` alone do not override saved history.
 
+### Hold turn admission
+
+The default driver implements the optional [`Agent.requestPause()`](../agent/README.md#hold-later-turns-without-cancelling-work) capability. It checks the hold before opening a later turn, rather than aborting the entered turn or transferring native ownership. Tools and steering inside that entered turn can continue. The driver retains waking intent while parked and rechecks the inbox on release; removed input and non-waking injection do not manufacture a turn. The original Agent and its runtime must remain alive.
+
 ### Create or resume agents programmatically
 
 Plugins and hosts create agents through `ctx.agents.create()` and resume persisted sessions through `ctx.agents.resume()`; both return an `AgentHandle` whose `dispose()` owns exact teardown. The loop runs each created agent to completion — the handle is only needed when the caller must tear the agent down itself.

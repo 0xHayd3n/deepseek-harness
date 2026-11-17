@@ -80,6 +80,8 @@ The [event map](event-producer-consumer.md) lists every event's producers and co
 
 A **step** is one model request plus the tools it calls. A **turn** is zero or more steps: it opens before its first input is claimed and closes once nothing is owed.
 
+The default driver supports a non-cancelling [turn-admission hold](../packages/core/agent/README.md#hold-later-turns-without-cancelling-work); the original runtime and transport must remain alive.
+
 ```text
 turn/start
   claim next-step input plus one queued message

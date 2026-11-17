@@ -56,6 +56,10 @@ kind: "package-reference"
 
 配置式恢复会在发布前将声明的路由记录为 Session 选择。程序化恢复保留 Session 选择，除非其 setup 显式记录另一条路由；仅传入初始 `agentOptions` 不会覆盖已有历史。
 
+### 暂停轮次准入
+
+默认驱动实现可选的 [`Agent.requestPause()`](../agent/README.zh.md#hold-later-turns-without-cancelling-work) 能力。它在打开后续轮次前检查暂停，而不中止已进入的轮次或转移原生所有权。已进入轮次中的工具和 steering 可以继续。驱动在停放期间保留唤醒意图，并在释放时重新检查 inbox；已移除的输入及不唤醒的注入不会制造轮次。原始 Agent 及其运行时必须保持存活。
+
 ### 以编程方式创建或恢复 agent
 
 插件与宿主通过 `ctx.agents.create()` 创建 agent，通过 `ctx.agents.resume()` 恢复持久化会话；两者都返回 `AgentHandle`，其 `dispose()`（资源释放）负责精确拆除对应的 agent。循环会把每个创建的 agent 运行到完成——只有调用方需要自行拆除 agent 时才需要句柄。

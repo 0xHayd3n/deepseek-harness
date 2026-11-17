@@ -8,6 +8,7 @@
  * @module @deepseek-ai/dsh-sdk-protocol/types
  */
 
+import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { CommandExecution } from '@deepseek-ai/dsh-commands/types'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
@@ -29,7 +30,7 @@ export interface InitializeParams {
   /** Optional positive output-token cap inherited by SDK-created agents and their in-process descendants. */
   maxTokens?: number
   /** Host-provided capabilities; omission retains native in-process answerers. */
-  capabilities?: { userQuestions?: boolean }
+  capabilities?: { userQuestions?: boolean; cooperativePause?: boolean }
 }
 
 /** Runtime-to-host request for one SDK-owned Session's structured user input. */
@@ -65,6 +66,39 @@ export interface HarnessSdkHostRequestMap {
 export interface InitializeResult {
   /** Wire-stable server identity (`deepseek-harness-sdk-runtime`) and version. */
   serverInfo: { name: string; version: string }
+  /** Opt-in process-local admission control; omitted by older runtimes. */
+  capabilities?: { cooperativePause?: { runtimeId: PauseRuntimeId; scope: 'turn-admission' } }
+}
+
+/** Identifies the SDK server instance that retains the Agent and its callbacks. */
+export type PauseRuntimeId = Branded<'PauseRuntimeId'>
+
+/** Caller-created identity for one pause intent, retained across lost responses. */
+export type PauseRequestId = Branded<'PauseRequestId'>
+
+/** Target an already-owned Agent in the exact runtime advertised by initialization. */
+export interface SessionPauseStateParams {
+  sessionId: string
+  /** Process-instance fence, not an authorization credential or a transferable owner. */
+  runtimeId: PauseRuntimeId
+}
+
+/** Acquire or release one monotonically identified, process-local admission hold. */
+export interface SessionPauseParams extends SessionPauseStateParams {
+  /** Positive safe integer; acquisition requires the current or next generation. */
+  generation: number
+  /** Created once before sending; a different intent cannot share the generation. */
+  requestId: PauseRequestId
+}
+
+/** Admission state only: not native-work coverage, durability, or permission to stop the runtime. */
+export interface SessionPauseResult extends SessionPauseStateParams {
+  scope: 'turn-admission'
+  /** Zero before the first request; only the latest generation is retained. */
+  generation: number
+  /** Absent only before this SDK owner has requested a hold. */
+  requestId?: PauseRequestId
+  state: 'unrequested' | 'pending' | 'paused' | 'released' | 'invalidated'
 }
 
 /** One user turn on one SDK session. */
@@ -213,6 +247,9 @@ export interface HarnessSdkRequestMap {
   'session/query': { params: SessionQueryParams; result: SessionQueryResult }
   'session/resume': { params: SessionResumeParams; result: Record<string, never> }
   'session/wait': { params: SessionWaitParams; result: Record<string, never> }
+  'session/pause': { params: SessionPauseParams; result: SessionPauseResult }
+  'session/pause-state': { params: SessionPauseStateParams; result: SessionPauseResult }
+  'session/release-pause': { params: SessionPauseParams; result: SessionPauseResult }
   'session/working-directory/get': { params: SessionWorkingDirectoryParams; result: SessionWorkingDirectoryResult }
   'session/working-directory/set': { params: SessionWorkingDirectorySetParams; result: SessionWorkingDirectoryResult }
   'shutdown': { params: undefined; result: Record<string, never> }

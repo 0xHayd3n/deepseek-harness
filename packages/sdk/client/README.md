@@ -57,6 +57,12 @@ try {
 
 `HarnessSession.getWorkingDirectory()` reads the effective directory; `setWorkingDirectory(path)` changes it and returns the validated absolute path. Either method creates an unknown Session without starting a model turn. Relative paths use the Session's current directory. Origin metadata, permissions, and existing processes remain unchanged. `HarnessClient` exposes the same methods with a leading `sessionId` argument.
 
+### Hold later turns on an existing client
+
+Initialize a low-level `HarnessClient` with `capabilities.cooperativePause: true`, then retain the returned `capabilities.cooperativePause.runtimeId`. `requestPause({ sessionId, runtimeId, generation, requestId })` requests a hold on an already-owned Agent. Create and retain the `PauseRequestId` before sending; `brandString<PauseRequestId>(randomUUID())` from `dsh-brand` and Node's `crypto` can create one. `getPauseState({ sessionId, runtimeId })` reads its latest receipt; `releasePause()` requires the same generation and request id. The [wire reference](../protocol/README.md#cooperative-turn-admission-pause) defines generations, states, and reconciliation after a lost response.
+
+These controls use only the existing transport and never start a replacement runtime. Keep the original client, process, callback handlers, and transport alive while a hold is pending or paused. `close()`, `shutdown`, and leaving an `await using` scope still stop the runtime; they are not pause operations. A pending receipt is not quiescence or a failed native operation, and malformed receipts never authorize cancellation or retry.
+
 ### Running agent turns with DeepSeekHarness
 
 ```ts

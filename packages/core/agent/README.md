@@ -69,6 +69,13 @@ handle.agent.steer({
 await handle.agent.whenIdle()
 ```
 
+<a id="hold-later-turns-without-cancelling-work"></a>
+### Hold later turns without cancelling work
+
+Drivers can expose `agent.requestPause()` as an optional capability. Its handle starts `pending` while an entered turn or maintenance task finishes; `ready` resolves at the first paused or terminal state, so inspect the current `state` before acting. The entered turn keeps its tools, callbacks, signal, and next-step steering. Later turns and their unclaimed input stay queued. Pending work can remain pending indefinitely; a deadline is not permission to cancel or replay it.
+
+The caller retains the handle and the live runtime. `release()` permits later turns without inventing a wake for non-waking input. A duplicate acquisition throws; a released or invalidated handle cannot release a successor. Explicit cancellation and disposal invalidate the hold and keep their existing stop semantics. New maintenance cannot start under a hold. `whenIdle()` and status still describe whole-agent activity, not pause readiness. This process-local hold is not a durable checkpoint, a descendant-work inventory, or permission to close or restart the runtime.
+
 ### Scope registrations to one agent
 
 `Agent.ctx` is the agent's scoped context: registrations made through it (tools, prompt sections, variables, event listeners, restrictions) apply to that agent alone and unwind on disposal. The same mechanism is what agent presets use to give one session a different capability set without affecting its neighbors.

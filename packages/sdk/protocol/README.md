@@ -44,6 +44,9 @@ Both wire ends share one method set: client-to-server requests, opt-in server-to
 | client→server | `session/query` | `SessionQueryParams` → `SessionQueryResult` |
 | client→server | `session/resume` | `SessionResumeParams` → `{}` |
 | client→server | `session/wait` | `SessionWaitParams` → `{}` |
+| client→server | `session/pause` | `SessionPauseParams` → `SessionPauseResult` |
+| client→server | `session/pause-state` | `SessionPauseStateParams` → `SessionPauseResult` |
+| client→server | `session/release-pause` | `SessionPauseParams` → `SessionPauseResult` |
 | client→server | `session/working-directory/get` | `SessionWorkingDirectoryParams` → `SessionWorkingDirectoryResult` |
 | client→server | `session/working-directory/set` | `SessionWorkingDirectorySetParams` → `SessionWorkingDirectoryResult` |
 | client→server | `shutdown` | no params → `{}` |
@@ -67,6 +70,17 @@ Both wire ends share one method set: client-to-server requests, opt-in server-to
 Command lifecycle notifications precede the `session/query` handler response. A command query ends high-level observation with `session.query.completed` for the same `commandId`, after model activity it starts; goal creation and resume include goal termination and closing activity. State-only commands need no model turn, and their completion notification can precede the response. SDKs consume this receipt internally and return `RunResult`; forwarders must preserve order. Shutdown cancels unfinished observation.
 
 `session/resume` accepts a non-empty persisted `{ sessionId }` and returns `{}` after restoring that exact session. It requires initialization and the original persistence store, sends no new input, and rejects missing, unreadable, incompatible, or occupied sessions without creating a replacement. Historical events remain in the stored log; notifications report newly committed events.
+
+<a id="cooperative-turn-admission-pause"></a>
+### Cooperative turn-admission pause
+
+Set `initialize.capabilities.cooperativePause: true`. A supporting runtime returns `{ cooperativePause: { runtimeId, scope: "turn-admission" } }` in `InitializeResult.capabilities`. The runtime id identifies this server instance; it is not a credential, transferable ownership, or a restart token. Controls require initialization and an exact already-owned live Agent; they do not open or resume sessions.
+
+`session/pause` and `session/release-pause` accept `{ sessionId, runtimeId, generation, requestId }`. Create and retain `requestId` before sending. A generation is a positive safe integer, beginning at one; a new hold uses exactly the next generation after the previous hold becomes terminal. Repeating the exact generation and request id returns its current receipt without reacquisition, including after release or invalidation. A different request id at that generation, stale or skipped generations, and a competing active hold are rejected. Release requires both identifiers to match the latest hold; it cannot release another caller's hold or a successor.
+
+`session/pause-state` accepts `{ sessionId, runtimeId }` and reads the latest receipt without waking work. Every receipt contains the target, `scope: "turn-admission"`, `generation`, and `state`; positive generations also contain `requestId`. Generation zero with `unrequested` means only that this SDK owner has not requested a hold, not that the Agent is unpaused or globally quiescent. An entered turn or maintenance task yields `pending`; `paused` means the hold has reached its turn-admission point. `released` and `invalidated` are terminal. Cancellation or disposal invalidates a hold. Pause readiness is not whole-agent idle, descendant settlement, or a native-work inventory.
+
+After a lost response, query state on the original transport and compare runtime, session, generation, and request id before acting. Never create a new intent or resend uncertain native work to resolve an unknown pause outcome. Keep the original runtime, transport, callbacks, and Agent alive. An entered turn may remain pending indefinitely; this API neither aborts it nor transfers its owner. It provides no durable checkpoint, reconnect, detach, cross-process handoff, or safe-restart guarantee.
 
 <a id="native-user-questions"></a>
 ### Native user questions

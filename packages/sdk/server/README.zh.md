@@ -55,6 +55,10 @@ Host 与桌面适配器共用 `dsh-commands/builtin` 的定义身份及中英文
 
 `session/working-directory/get` 接收 `{ sessionId }`；`session/working-directory/set` 接收 `{ sessionId, path }`。两者均返回 `{ cwd }`，并可创建未知 Session，而不启动模型轮次。读取通过工作目录服务恢复缺失目录；修改保留起始目录元数据与权限，并通过已记录的用户上下文告知模型。
 
+### 协作式轮次准入暂停
+
+显式启用的[暂停协议](../protocol/README.zh.md#cooperative-turn-admission-pause)只控制已拥有的确切存活 Agent。服务器拒绝不同的运行时身份、未知或被替换的 Agent、不支持的驱动及不匹配的持有方，而不会发现、恢复或创建会话。每个 SDK Session 只保留最新回执。它不是其他插件所持暂停或后代工作的清单。关闭仍会 dispose 运行时；暂停不改变 EOF、取消或 dispose 行为。
+
 ### 组装
 
 插件在首次使用时为每个 `sessionId` 创建一个 agent。已注册的模型适配器优先用于该路由；尚无适配器负责的 `deepseek-official` 路由会挂载 DeepSeek 适配器，任何其他尚无适配器负责的提供方都会导致初始化失败。初始化成功前，所选适配器会解析确切模型与可选推理强度。

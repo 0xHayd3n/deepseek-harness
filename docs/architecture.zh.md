@@ -84,6 +84,8 @@ AgentLoop 初始化 Agent，失败则回滚，并在启动已排队工作前等�
 
 一个**步骤**是一次模型请求加上它调用的工具。一个**轮次**包含零个或多个步骤：它在领取首条输入之前打开，并在不再欠下任何工作时关闭。
 
+默认驱动支持不取消工作的[轮次准入暂停](../packages/core/agent/README.zh.md#hold-later-turns-without-cancelling-work)；原始运行时和传输必须保持存活。
+
 ```text
 turn/start
   claim next-step input plus one queued message
